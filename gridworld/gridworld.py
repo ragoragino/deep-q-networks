@@ -1,50 +1,65 @@
 """
-Cartpole task solved with Double Deep Q-Network
+Gridworld, 4x4, with Q-learning neural-network
+
+4x4 environment
+(1, 1) - WALL (0)
+(2, 2) - FINISH (+10)
+(2, 1) - PIT (-10)
 """
 
 import matplotlib.pyplot as plt
 import numpy as np
 import os
-import sys
 import tensorflow as tf
-import gym
 
 cur_dir = os.path.dirname(os.path.realpath(__file__))
 os.chdir(cur_dir)
 plt.style.use('ggplot')
 
-# Obtaining cart-pole environment
-env = gym.make('CartPole-v0')
-ACTION_SET = np.array([0, 1])  # available actions
+"""
+PARAMETERS OF THE MODEL
+"""
+height = 4  # height of the track
+width = 4  # width of the track
+
+action_set = [(-1, 0),  (1, 0), (0, -1), (0, 1)]  # available actions
+states = [(i, j) for i in range(width) for j in range(height)]
+
+states_vec = {}
+for i in range(width):
+    for j in range(height):
+        states_vec[(i, j)] = np.zeros((1, width * height), dtype=np.float32)
+        states_vec[(i, j)][0, j * width + i] = 1
 
 """
 NN SETUP
 """
 # Parameters of the learning
-LEARNING_RATE = 0.001
+LEARNING_RATE = 0.01
 HIDDEN_NAMES = ['h1', 'h2',  'out']
 SIZE_HIDDEN = {}
-SIZE_HIDDEN['h1'] = 32
-SIZE_HIDDEN['h2'] = 64
-SIZE_HIDDEN['out'] = len(ACTION_SET)
-SIZE_INPUT = 4
+SIZE_HIDDEN['h1'] = 128
+SIZE_HIDDEN['h2'] = 128
+SIZE_HIDDEN['out'] = len(action_set)
+SIZE_INPUT = width * height
 STD_HIDDEN = {}
 STD_HIDDEN['h1'] = np.sqrt(1 / SIZE_INPUT)
 STD_HIDDEN['h2'] = np.sqrt(1 / SIZE_HIDDEN['h1'])
 STD_HIDDEN['out'] = np.sqrt(1 / SIZE_HIDDEN['h2'])
-REGULARIZER = 0.0001
+REGULARIZER = 0.001
 ALPHA = 0.1
-BUFFER_SIZE = 256
-BATCH_SIZE = 196
-UPDATE_TARGET = 10
-MAX_ITER = 10000
-EPSILON = 0.0
+BUFFER_SIZE = 512
+BATCH_SIZE = 64
+UPDATE_TARGET = 100
 GAMMA = 1
-EXPLORATION_LIMIT = 200
+EPSILON = 0.01
+MAX_ITER = 1000
+EXPLORATION_LIMIT = 500
 
 with tf.Graph().as_default():
     X = tf.placeholder("float32", [None, SIZE_INPUT])
     Y = tf.placeholder("float32", [None, SIZE_HIDDEN['out']])
+    inv_dropout = tf.placeholder("float32")
 
     with tf.name_scope("layer1"):
         W1 = tf.Variable(tf.random_normal([SIZE_INPUT, SIZE_HIDDEN['h1']], 0, STD_HIDDEN['h1'],
@@ -89,7 +104,7 @@ with tf.Graph().as_default():
         b3_back = tf.Variable(tf.zeros([SIZE_HIDDEN['out']], dtype=tf.float32), name='b3_back')
         pred_target = tf.matmul(layer2_act_back, W3_back) + b3_back
 
-    # Adjusting the target network
+    # Adjusting the backup network
     assign = [W1_back.assign(W1), W2_back.assign(W2), W3_back.assign(W3),
               b1_back.assign(b1), b2_back.assign(b2), b3_back.assign(b3)]
 
@@ -107,6 +122,8 @@ with tf.Graph().as_default():
 
     # Gathering of nodes
     features = [optimizer]
+
+    # summary_features = [optimizer, merged]
     prediction = [pred]
     prediction_target = [pred_target]
 
@@ -118,91 +135,148 @@ with tf.Graph().as_default():
 
 input_buffer = np.zeros((BUFFER_SIZE, SIZE_INPUT))
 output_buffer = np.zeros((BUFFER_SIZE, SIZE_HIDDEN['out']))
-input_old = np.zeros((1, SIZE_INPUT), dtype=np.float32)
-input_new = np.zeros((1, SIZE_INPUT), dtype=np.float32)
-average_reward = np.zeros(100, dtype=np.float32)
-aggregate_reward = []
+input_old = np.zeros((1, width * height), dtype=np.float32)
+input_new = np.zeros((1, width * height), dtype=np.float32)
 buffer_ready = False
 h = 0
-trials = 0
+learning_step = 0
+history = np.zeros(MAX_ITER)
 
 for it in range(MAX_ITER):
     step = 0
-    old_state = env.reset()
+    start = (0, 0)
+    old_state = start
     input_old.fill(0)
     input_new.fill(0)
 
-    # env.render()
-
     while True:
-        step += 1
-        trials += 1
+        step -= 1
+        delta = 0
         h %= BUFFER_SIZE
 
-        input_buffer[h, :] = old_state
-        input_old[:] = old_state
+        input_buffer[h, :] = states_vec[(old_state[0], old_state[1])]
+        input_old[:] = states_vec[(old_state[0], old_state[1])]
         output_buffer[h, :] = sess.run(prediction, feed_dict={X: input_old})[0][0]
 
         # Epsilon-greedy action
         explore = 1 - min(it, EXPLORATION_LIMIT) * (1 - EPSILON) / EXPLORATION_LIMIT
         if np.random.binomial(1, explore) == 1:
-            new_index = np.random.choice(np.arange(0, len(ACTION_SET)))
-            new_action = ACTION_SET[new_index]
+            new_index = np.random.choice(np.arange(0, len(action_set)))
+            new_action = action_set[new_index]
         else:
             high_action = - np.inf
-            for i in range(len(ACTION_SET)):
+            for i in range(len(action_set)):
                 pick_action = output_buffer[h, i]
                 if pick_action > high_action:
                     high_action = pick_action
                     new_index = i
-            new_action = ACTION_SET[new_index]
+            new_action = action_set[new_index]
 
-        new_state, reward, done, info = env.step(new_action)
+        new_state = tuple(map(sum, zip(old_state, new_action)))
+
+        # Not viable -> outside the grid or hit the wall
+        if new_state not in states or new_state in [(1, 1), (2, 1)]:
+            new_state = old_state
+
+            if new_state == (2, 1):
+                delta = -10  # Custom negative reward for falling into the pit
 
         high_action = - np.inf
-        input_new[:] = new_state
-        action_pred_new = sess.run(prediction_target, feed_dict={X: input_new})[0][0]
-        for i in range(len(ACTION_SET)):
+        input_new[:] = states_vec[(new_state[0], new_state[1])]
+        action_pred_new = sess.run(prediction_target,
+                                   feed_dict={X: input_new})[0][0]
+        for i in range(len(action_set)):
             pick_action = action_pred_new[i]
             if pick_action > high_action:
                 high_action = pick_action
 
-        if not done:
-            delta = reward + GAMMA * high_action
+        if new_state != (2, 2):
+            delta += -1 + GAMMA * high_action
         else:
-            delta = reward
+            delta += 10  # Custom positive reward for achieving the goal
 
         output_buffer[h, new_index] = delta
         h += 1
+        if h == BUFFER_SIZE:
+            buffer_ready = True
 
         # Experience replay
-        h_replay = min(BATCH_SIZE, trials)
-        random_list = np.random.choice(np.arange(0, min(BUFFER_SIZE, trials), 1),
-                                       size=h_replay, replace=False)
-        _ = sess.run(features, feed_dict={X: input_buffer[random_list, :],
-                                          Y: output_buffer[random_list, :]})
+        if buffer_ready:
+            random_list = np.random.choice(np.arange(0, BUFFER_SIZE, 1),
+                                           size=BATCH_SIZE, replace=False)
+            _ = sess.run(features, feed_dict={X: input_buffer[random_list, :],
+                                              Y: output_buffer[random_list, :]})
+            learning_step += 1
 
-        # Update target action-value function
-        if (trials % UPDATE_TARGET) == 0:
-            sess.run(assign)
+            # Update target action-value function
+            if (learning_step % UPDATE_TARGET) == 0:
+               sess.run(assign)
 
         old_state = new_state
 
-        if done:
-            print("Episode %d finished after %f time steps" % (it, step))
-            aggregate_reward.append(step)
-            average_reward[(it % 100)] = step
-            if it >= 100 and average_reward.mean() >= 195.0:
-                print("SUCCESS AFTER {} EPISODES".format(it))
-
-                plt.figure(figsize=(16, 12), dpi=100)
-                plt.plot(aggregate_reward, linewidth=1.0, linestyle="-")
-                plt.title("Number of steps required to finish an episode")
-                plt.savefig('cartpole.pdf', bbox_inches='tight',
-                            dpi=100, format='pdf')
-
-                sys.exit(0)
-
+        if old_state == (2, 2):
             break
 
+    print("{}: {}".format(it, -step))
+    history[it] = -step
 
+window = 40
+ma_history = np.zeros(MAX_ITER - window)
+for i in range(0, MAX_ITER - window):
+    ma_history[i] = np.sum(history[i: i + window]) / window
+
+plt.figure(figsize=(16, 12))
+plt.plot(ma_history, color="brown", linewidth=1.0, linestyle="-")
+plt.title("Number of steps required to finish an episode, "
+          "moving average by {} steps".format(window))
+plt.savefig('gridworld_learning.pdf', bbox_inches='tight',
+            dpi=100, format='pdf')
+
+track_x = []
+track_y = []
+
+for i in range(width):
+    for j in range(height):
+        track_x.append(i)
+        track_y.append(j)
+
+new_state = start
+traj_x = []
+traj_y = []
+traj_x.append(new_state[0])
+traj_y.append(new_state[1])
+# k there just to make sure the loop ends,
+# if there would be no optimal path
+k = 0
+while k < 25:
+    k += 1
+
+    input_old[:] = states_vec[(new_state[0], new_state[1])]
+    output_buffer[h, :] = sess.run(prediction,
+                                   feed_dict={X: input_old})[0][0]
+
+    high_action = - np.inf
+    for i in range(len(action_set)):
+        pick_action = output_buffer[h, i]
+        if pick_action > high_action:
+            high_action = pick_action
+            new_index = i
+    new_action = action_set[new_index]
+
+    new_state = tuple(map(sum, zip(new_state, new_action)))
+
+    traj_x.append(new_state[0])
+    traj_y.append(new_state[1])
+
+    if new_state == (2, 2):
+        break
+
+# Plot of the optimal path
+plt.figure(figsize=(16, 12))
+plt.scatter(track_x, track_y, color="blue", label="Track")
+plt.plot(traj_x, traj_y, color="red", linewidth=1.0, linestyle="-")
+plt.text(2.1, 2.1, r'END', fontsize=10)
+plt.text(2.1, 1.1, r'PIT', fontsize=10)
+plt.text(1.1, 1.1, r'WALL', fontsize=10)
+plt.savefig('gridworld_track.pdf', bbox_inches='tight',
+            dpi=100, format='pdf')
