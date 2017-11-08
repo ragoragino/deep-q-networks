@@ -1,10 +1,13 @@
 """
-Gridworld, 4x4, with Q-learning neural-network
+Gridworld, 4x4, with Double Deep Q-learning
 
 4x4 environment
 (1, 1) - WALL (0)
 (2, 2) - FINISH (+10)
 (2, 1) - PIT (-10)
+
+When the agent goes out of the environment, or crashes with the wall,
+or falls into the pit, the new state is the state before this last action.
 """
 
 import matplotlib.pyplot as plt
@@ -122,8 +125,6 @@ with tf.Graph().as_default():
 
     # Gathering of nodes
     features = [optimizer]
-
-    # summary_features = [optimizer, merged]
     prediction = [pred]
     prediction_target = [pred_target]
 
@@ -137,8 +138,8 @@ input_buffer = np.zeros((BUFFER_SIZE, SIZE_INPUT))
 output_buffer = np.zeros((BUFFER_SIZE, SIZE_HIDDEN['out']))
 input_old = np.zeros((1, width * height), dtype=np.float32)
 input_new = np.zeros((1, width * height), dtype=np.float32)
-buffer_ready = False
 h = 0
+trials = 0
 learning_step = 0
 history = np.zeros(MAX_ITER)
 
@@ -153,6 +154,7 @@ for it in range(MAX_ITER):
         step -= 1
         delta = 0
         h %= BUFFER_SIZE
+        trials += 1
 
         input_buffer[h, :] = states_vec[(old_state[0], old_state[1])]
         input_old[:] = states_vec[(old_state[0], old_state[1])]
@@ -197,19 +199,17 @@ for it in range(MAX_ITER):
 
         output_buffer[h, new_index] = delta
         h += 1
-        if h == BUFFER_SIZE:
-            buffer_ready = True
 
         # Experience replay
-        if buffer_ready:
-            random_list = np.random.choice(np.arange(0, BUFFER_SIZE, 1),
-                                           size=BATCH_SIZE, replace=False)
+        if trials > 0:
+            h_replay = min(BATCH_SIZE, trials)
+            random_list = np.random.choice(np.arange(0, min(BUFFER_SIZE, trials), 1),
+                                           size=h_replay, replace=False)
             _ = sess.run(features, feed_dict={X: input_buffer[random_list, :],
                                               Y: output_buffer[random_list, :]})
-            learning_step += 1
 
             # Update target action-value function
-            if (learning_step % UPDATE_TARGET) == 0:
+            if (trials % UPDATE_TARGET) == 0:
                sess.run(assign)
 
         old_state = new_state
@@ -251,10 +251,13 @@ k = 0
 while k < 25:
     k += 1
 
-    input_old[:] = states_vec[(new_state[0], new_state[1])]
+    try:
+        input_old[:] = states_vec[(new_state[0], new_state[1])]
+    except KeyError:
+        break
+
     output_buffer[h, :] = sess.run(prediction,
                                    feed_dict={X: input_old})[0][0]
-
     high_action = - np.inf
     for i in range(len(action_set)):
         pick_action = output_buffer[h, i]
@@ -275,6 +278,7 @@ while k < 25:
 plt.figure(figsize=(16, 12))
 plt.scatter(track_x, track_y, color="blue", label="Track")
 plt.plot(traj_x, traj_y, color="red", linewidth=1.0, linestyle="-")
+plt.title("Optimal policy after {} iterations".format(MAX_ITER))
 plt.text(2.1, 2.1, r'END', fontsize=10)
 plt.text(2.1, 1.1, r'PIT', fontsize=10)
 plt.text(1.1, 1.1, r'WALL', fontsize=10)
