@@ -1,11 +1,9 @@
 """
 Gridworld, 4x4, with Double Deep Q-learning
-
 4x4 environment
 (1, 1) - WALL (0)
 (2, 2) - FINISH (+10)
 (2, 1) - PIT (-10)
-
 When the agent goes out of the environment, or crashes with the wall,
 or falls into the pit, the new state is the state before this last action.
 """
